@@ -15,13 +15,12 @@ checksum:
 
 signs:
   - artifacts: checksum
-    signature: "${artifact}.sig"
+    args: ["--armor", "--detach-sign"]
     cmd: gpg
-    args: ["--detach-sign", "--armor", "--local-user", "{{ .Env.GPG_FINGERPRINT }}", "--output", "checksums.txt"]
-    stdin: false
     env:
       - GPG_FINGERPRINT
     #195DB3EDF551968F4CCB3F5716AE97A8A5E637D0
+    
 release:
   github:
     owner: unlimitechcloud
