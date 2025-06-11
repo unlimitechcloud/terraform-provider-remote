@@ -17,7 +17,7 @@ signs:
   - artifacts: checksum
     signature: "${artifact}.sig"
     cmd: gpg
-    args: ["--detach-sign", "--armor", "--local-user", "{{ .Env.GPG_FINGERPRINT }}", "{{ .ArtifactPath }}"]
+    args: ["--detach-sign", "--armor", "--local-user", "{{ .Env.GPG_FINGERPRINT }}", "--output", "checksums.txt"]
     stdin: false
     env:
       - GPG_FINGERPRINT
