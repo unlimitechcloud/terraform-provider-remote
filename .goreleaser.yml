@@ -12,7 +12,7 @@ checksum:
   algorithm: sha256
 
 signs:
-  - artifacts: checksum
+  - artifacts: checksums
     args: ["--armor", "--detach-sign"]
     cmd: gpg
     env:
