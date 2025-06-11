@@ -1,9 +1,8 @@
 package main
 
 import (
-	"terraform-provider-remote/remote"
-
 	"github.com/hashicorp/terraform-plugin-sdk/v2/plugin"
+	"github.com/unlimitechcloud/terraform-provider-remote/remote"
 )
 
 func main() {
