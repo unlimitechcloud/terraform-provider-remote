@@ -1,4 +1,4 @@
-module github.com/tuusuario/terraform-provider-remote
+module github.com/unlimitechcloud/terraform-provider-remote
 
 go 1.20
 
