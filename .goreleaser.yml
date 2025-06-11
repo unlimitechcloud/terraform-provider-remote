@@ -1,0 +1,24 @@
+version: 2
+
+project_name: terraform-provider-remote
+
+builds:
+  - goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags: "-s -w"
+
+archives:
+  - format: zip
+
+checksum:
+  name_template: "checksums.txt"
+
+signs:
+  - artifacts: checksum
+    cmd: gpg
+    args: ["--armor", "--detach-sign", "{{ .Artifact }}"]
+
+release:
+  github:
+    owner: unlimitechcloud
+    name: terraform-provider-remote
