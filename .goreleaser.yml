@@ -7,11 +7,9 @@ builds:
     goarch: [amd64, arm64]
     ldflags: "-s -w"
 
-archives:
-  - format: zip
-
 checksum:
   name_template: "checksums.txt"
+  algorithm: sha256
 
 signs:
   - artifacts: checksum
