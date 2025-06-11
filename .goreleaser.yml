@@ -21,7 +21,7 @@ signs:
     stdin: false
     env:
       - GPG_FINGERPRINT
-    #16AE97A8A5E637D0
+    #195DB3EDF551968F4CCB3F5716AE97A8A5E637D0
 release:
   github:
     owner: unlimitechcloud
