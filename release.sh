@@ -2,6 +2,7 @@
 set -e
 
 export GITHUB_TOKEN="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"
+export GPG_FINGERPRINT="195DB3EDF551968F4CCB3F5716AE97A8A5E637D0"
 
 ./build.local.sh
 rm -rf dist
