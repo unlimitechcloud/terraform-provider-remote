@@ -7,7 +7,7 @@ export GITHUB_TOKEN="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"
 rm -rf dist
 
 git add .
-git commit -m "chore: release $new_tag"
+git commit -m "before release"
 git push origin main
 
 latest_tag=$(git tag --list 'v*' | sort -V | tail -n 1)
