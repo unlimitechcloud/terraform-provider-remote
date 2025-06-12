@@ -54,7 +54,6 @@ signs:
       - "${signature}"
       - "--detach-sign"
       - "${artifact}"
-    #195DB3EDF551968F4CCB3F5716AE97A8A5E637D0
 
 release:
   github:
