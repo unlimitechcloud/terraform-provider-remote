@@ -19,6 +19,7 @@ else
   patch=$((patch + 1))
   new_tag="v${major}.${minor}.${patch}"
 fi
+echo "$new_tag"
 git tag "$new_tag"
 git push origin "$new_tag"
 
