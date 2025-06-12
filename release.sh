@@ -1,7 +1,6 @@
 #!/bin/bash
 set -e
 
-export GITHUB_TOKEN="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"
 export GPG_FINGERPRINT="195DB3EDF551968F4CCB3F5716AE97A8A5E637D0"
 
 ./build.local.sh
