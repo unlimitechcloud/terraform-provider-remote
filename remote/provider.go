@@ -6,27 +6,44 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
+	"sync"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/lambda"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/xeipuuv/gojsonschema"
 )
 
 type remoteClient struct {
-	LambdaArn string
-	Svc       *lambda.Lambda
+	LambdaName string
+	Svc        *lambda.Lambda
+	once       sync.Once
+	schemas    *lambdaSchemaResponse
+	schemaErr  error
+}
+
+type lambdaSchemaResponse struct {
+	Request  map[string]interface{} `json:"request"`
+	Response map[string]interface{} `json:"response"`
 }
 
 func Provider() *schema.Provider {
 	return &schema.Provider{
 		Schema: map[string]*schema.Schema{
-			"lambda_arn": {
+			"lambda": {
 				Type:        schema.TypeString,
 				Required:    true,
-				DefaultFunc: schema.EnvDefaultFunc("REMOTE_LAMBDA_ARN", nil),
-				Description: "ARN de la función Lambda que maneja el ciclo de vida.",
+				DefaultFunc: schema.EnvDefaultFunc("REMOTE_LAMBDA", nil),
+				Description: "Name or ARN of the Lambda function handling lifecycle.",
+			},
+			"region": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				DefaultFunc: schema.EnvDefaultFunc("AWS_REGION", nil),
+				Description: "AWS region for the Lambda function if using name instead of ARN.",
 			},
 		},
 		ResourcesMap: map[string]*schema.Resource{
@@ -37,18 +54,132 @@ func Provider() *schema.Provider {
 }
 
 func configureProvider(ctx context.Context, d *schema.ResourceData) (interface{}, diag.Diagnostics) {
-	sess := session.Must(session.NewSession())
+	lambdaName := d.Get("lambda").(string)
+	region := d.Get("region").(string)
+
+	var sess *session.Session
+	if strings.HasPrefix(lambdaName, "arn:") {
+		sess = session.Must(session.NewSession())
+	} else {
+		if region == "" {
+			return nil, diag.Errorf("region is required when lambda is not an ARN")
+		}
+		awsCfg := aws.NewConfig().WithRegion(region)
+		sess = session.Must(session.NewSession(awsCfg))
+	}
+
 	return &remoteClient{
-		LambdaArn: d.Get("lambda_arn").(string),
-		Svc:       lambda.New(sess),
+		LambdaName: lambdaName,
+		Svc:        lambda.New(sess),
 	}, nil
 }
 
 type lambdaPayload struct {
-	Action   string                 `json:"phase"`
+	Action   string                 `json:"action"`
 	Args     map[string]interface{} `json:"args"`
 	State    map[string]interface{} `json:"state,omitempty"`
+	Store    map[string]interface{} `json:"store,omitempty"`
 	Planning bool                   `json:"planning,omitempty"`
+}
+
+type lambdaResponse struct {
+	ID      string                 `json:"id"`
+	Result  map[string]interface{} `json:"result"`
+	Store   map[string]interface{} `json:"store"`
+	Replace bool                   `json:"replace"`
+	Reason  string                 `json:"reason"`
+}
+
+func (c *remoteClient) getSchemas() (*lambdaSchemaResponse, error) {
+	schemaWasFetched := false
+	c.once.Do(func() {
+		log.Printf("[INFO] Requesting schemas from Lambda for the first time...")
+		resp, err := invokeLambda(c, lambdaPayload{Action: "schema"})
+		if err != nil {
+			c.schemaErr = err
+			return
+		}
+		var schemaResp lambdaSchemaResponse
+		if resp.Result != nil {
+			resultBytes, _ := json.Marshal(resp.Result)
+			_ = json.Unmarshal(resultBytes, &schemaResp)
+			log.Printf("[INFO] Received schema response from Lambda:")
+			pretty, _ := json.MarshalIndent(resp.Result, "", "  ")
+			log.Printf("[INFO] Lambda schema JSON:\n%s", string(pretty))
+		} else {
+			log.Printf("[INFO] Lambda returned no schema in result field.")
+		}
+		if len(schemaResp.Request) > 0 {
+			log.Printf("[INFO] Request schema loaded from Lambda.")
+		} else {
+			log.Printf("[INFO] No request schema returned from Lambda.")
+		}
+		if len(schemaResp.Response) > 0 {
+			log.Printf("[INFO] Response schema loaded from Lambda.")
+		} else {
+			log.Printf("[INFO] No response schema returned from Lambda.")
+		}
+		c.schemas = &schemaResp
+		schemaWasFetched = true
+	})
+	if !schemaWasFetched {
+		log.Printf("[INFO] Using cached schema; not fetching from Lambda again.")
+	}
+	return c.schemas, c.schemaErr
+}
+
+func validateWithSchema(schema map[string]interface{}, doc interface{}, side string) error {
+	if schema == nil || len(schema) == 0 {
+		log.Printf("[INFO] Skipping schema validation for %s: no schema provided by Lambda.", side)
+		return nil
+	}
+	log.Printf("[INFO] Validating %s with JSON schema...", side)
+	schemaLoader := gojsonschema.NewGoLoader(schema)
+	docLoader := gojsonschema.NewGoLoader(doc)
+	result, err := gojsonschema.Validate(schemaLoader, docLoader)
+	if err != nil {
+		log.Printf("[ERROR] JSON schema validation error (%s): %v", side, err)
+		return fmt.Errorf("jsonschema validation error (%s): %w", side, err)
+	}
+	if !result.Valid() {
+		msg := fmt.Sprintf("%s failed schema validation:\n", side)
+		for _, desc := range result.Errors() {
+			msg += "- " + desc.String() + "\n"
+		}
+		log.Printf("[ERROR] %s", msg)
+		return fmt.Errorf(msg)
+	}
+	log.Printf("[INFO] %s passed JSON schema validation.", side)
+	return nil
+}
+
+// --- Helper: parse JSON string (args) into map ---
+func parseArgsJSON(argsStr string) (map[string]interface{}, error) {
+	var out map[string]interface{}
+	if err := json.Unmarshal([]byte(argsStr), &out); err != nil {
+		return nil, fmt.Errorf("failed to parse args as JSON object: %w", err)
+	}
+	return out, nil
+}
+
+// --- Helper for getPreviousArgs: returns args from state as map[string]interface{} ---
+func getPreviousArgs(d *schema.ResourceData) map[string]interface{} {
+	if d == nil || d.IsNewResource() {
+		return map[string]interface{}{}
+	}
+	v, ok := d.GetOk("args")
+	if !ok {
+		return map[string]interface{}{}
+	}
+	argsStr, ok := v.(string)
+	if !ok || argsStr == "" {
+		return map[string]interface{}{}
+	}
+	m, err := parseArgsJSON(argsStr)
+	if err != nil {
+		return map[string]interface{}{}
+	}
+	return m
 }
 
 func resourceRemote() *schema.Resource {
@@ -57,29 +188,74 @@ func resourceRemote() *schema.Resource {
 		ReadContext:   resourceRemoteRead,
 		UpdateContext: resourceRemoteUpdate,
 		DeleteContext: resourceRemoteDelete,
-
+		CustomizeDiff: func(ctx context.Context, d *schema.ResourceDiff, meta interface{}) error {
+			client := meta.(*remoteClient)
+			argsStr := d.Get("args").(string)
+			args, err := parseArgsJSON(argsStr)
+			if err != nil {
+				return fmt.Errorf("CustomizeDiff: %w", err)
+			}
+			store := map[string]interface{}{}
+			if v, ok := d.GetOk("store"); ok {
+				storeStr, ok := v.(string)
+				if ok && storeStr != "" {
+					_ = json.Unmarshal([]byte(storeStr), &store)
+				}
+			}
+			old, _ := d.GetChange("args")
+			oldArgsStr, ok := old.(string)
+			var oldArgs map[string]interface{}
+			isCreate := !ok || oldArgsStr == "" || oldArgsStr == "{}"
+			if !isCreate {
+				oldArgs, err = parseArgsJSON(oldArgsStr)
+				if err != nil {
+					return fmt.Errorf("CustomizeDiff: old args not valid JSON: %w", err)
+				}
+			} else {
+				oldArgs = map[string]interface{}{}
+			}
+			if isCreate {
+				log.Printf("[INFO] Skipping diff call to Lambda: this is a create operation (no previous state).")
+				return nil
+			}
+			// Only call Lambda for diff if there is a previous state (i.e., not create)
+			res, err := invokeLambda(client, lambdaPayload{
+				Action: "diff",
+				Args:   args,
+				State:  oldArgs,
+				Store:  store,
+			})
+			if err != nil {
+				return err
+			}
+			if res.Replace {
+				log.Printf("[INFO] Lambda requested replace: %s", res.Reason)
+				if err := d.ForceNew("args"); err != nil {
+					return fmt.Errorf("failed to mark 'args' for replacement: %w", err)
+				}
+			}
+			return nil
+		},
 		Schema: map[string]*schema.Schema{
 			"id": {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
 			"args": {
-				Type:     schema.TypeMap,
+				Type:     schema.TypeString,
 				Required: true,
-				Elem:     &schema.Schema{Type: schema.TypeString},
 			},
 			"result": {
 				Type:     schema.TypeMap,
 				Computed: true,
 				Elem:     &schema.Schema{Type: schema.TypeString},
 			},
+			"store": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
 		},
 	}
-}
-
-type lambdaResponse struct {
-	ID     string                 `json:"id"`
-	Result map[string]interface{} `json:"result"`
 }
 
 func invokeLambda(client *remoteClient, payload lambdaPayload) (*lambdaResponse, error) {
@@ -87,9 +263,9 @@ func invokeLambda(client *remoteClient, payload lambdaPayload) (*lambdaResponse,
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("[INFO] invoking Lambda %s with payload: %s", client.LambdaArn, string(bytes))
+	log.Printf("[INFO] invoking Lambda %s with payload: %s", client.LambdaName, string(bytes))
 	resp, err := client.Svc.Invoke(&lambda.InvokeInput{
-		FunctionName: aws.String(client.LambdaArn),
+		FunctionName: aws.String(client.LambdaName),
 		Payload:      bytes,
 	})
 	if err != nil {
@@ -108,36 +284,119 @@ func invokeLambda(client *remoteClient, payload lambdaPayload) (*lambdaResponse,
 		return nil, err
 	}
 
-	id, ok := out["id"].(string)
-	if !ok || id == "" {
-		return nil, fmt.Errorf("lambda response missing required 'id' field")
-	}
+	// Action-specific parsing
+	switch payload.Action {
+	case "diff", "schema":
+		// Old style: whole response as result (for schema/diff)
+		return &lambdaResponse{
+			Result: out,
+		}, nil
+	default:
+		// CRUD: expects { result: {...}, store: {...}, replace?, reason? }
+		resultVal, _ := out["result"].(map[string]interface{})
+		storeVal, _ := out["store"].(map[string]interface{})
+		replace, _ := out["replace"].(bool)
+		reason, _ := out["reason"].(string)
 
-	result := &lambdaResponse{
-		ID:     id,
-		Result: out,
+		id := ""
+		if resultVal != nil {
+			if idRaw, ok := resultVal["id"]; ok {
+				id, _ = idRaw.(string)
+			}
+		}
+
+		return &lambdaResponse{
+			ID:      id,
+			Result:  resultVal,
+			Store:   storeVal,
+			Replace: replace,
+			Reason:  reason,
+		}, nil
 	}
-	return result, nil
+}
+
+
+func setStoreAsJSONString(d *schema.ResourceData, store map[string]interface{}) error {
+	if store == nil {
+		return d.Set("store", "")
+	}
+	bytes, err := json.Marshal(store)
+	if err != nil {
+		return fmt.Errorf("could not marshal store as JSON: %w", err)
+	}
+	return d.Set("store", string(bytes))
 }
 
 func resourceRemoteCreate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	client := m.(*remoteClient)
-	args := d.Get("args").(map[string]interface{})
-	state := dToMap(d)
-	res, err := invokeLambda(client, lambdaPayload{Action: "create", Args: args, State: state, Planning: isPlanning()})
+	argsStr := d.Get("args").(string)
+	args, err := parseArgsJSON(argsStr)
+	if err != nil {
+		return diag.FromErr(fmt.Errorf("create: %w", err))
+	}
+	store := map[string]interface{}{}
+	if v, ok := d.GetOk("store"); ok {
+		storeStr, ok := v.(string)
+		if ok && storeStr != "" {
+			_ = json.Unmarshal([]byte(storeStr), &store)
+		}
+	}
+	state := map[string]interface{}{} // No previous state on create
+
+	// Validate args against schema.request
+	schemas, err := client.getSchemas()
 	if err != nil {
 		return diag.FromErr(err)
 	}
+	if err := validateWithSchema(schemas.Request, args, "request"); err != nil {
+		return diag.FromErr(err)
+	}
+
+	res, err := invokeLambda(client, lambdaPayload{Action: "create", Args: args, State: state, Store: store, Planning: isPlanning()})
+	if err != nil {
+		return diag.FromErr(err)
+	}
+	if res.ID == "" {
+		return diag.FromErr(fmt.Errorf("lambda create response missing required 'id' field or returned empty id"))
+	}
+	// Validate result against schema.response
+	if err := validateWithSchema(schemas.Response, res.Result, "response"); err != nil {
+		return diag.FromErr(err)
+	}
 	d.SetId(res.ID)
-	d.Set("result", res.Result)
+	d.Set("result", flattenMapValues(res.Result))
+	if err := setStoreAsJSONString(d, res.Store); err != nil {
+		return diag.FromErr(err)
+	}
 	return nil
 }
 
 func resourceRemoteRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	client := m.(*remoteClient)
-	args := d.Get("args").(map[string]interface{})
-	state := dToMap(d)
-	res, err := invokeLambda(client, lambdaPayload{Action: "read", Args: args, State: state, Planning: isPlanning()})
+	argsStr := d.Get("args").(string)
+	args, err := parseArgsJSON(argsStr)
+	if err != nil {
+		return diag.FromErr(fmt.Errorf("read: %w", err))
+	}
+	store := map[string]interface{}{}
+	if v, ok := d.GetOk("store"); ok {
+		storeStr, ok := v.(string)
+		if ok && storeStr != "" {
+			_ = json.Unmarshal([]byte(storeStr), &store)
+		}
+	}
+	state := getPreviousArgs(d)
+
+	// Validate args against schema.request
+	schemas, err := client.getSchemas()
+	if err != nil {
+		return diag.FromErr(err)
+	}
+	if err := validateWithSchema(schemas.Request, args, "request"); err != nil {
+		return diag.FromErr(err)
+	}
+
+	res, err := invokeLambda(client, lambdaPayload{Action: "read", Args: args, State: state, Store: store, Planning: isPlanning()})
 	if err != nil {
 		log.Printf("[ERROR] remote read failed: %v", err)
 		return diag.FromErr(fmt.Errorf("remote read failed: %w", err))
@@ -148,40 +407,135 @@ func resourceRemoteRead(ctx context.Context, d *schema.ResourceData, m interface
 		d.SetId("")
 		return nil
 	}
+	// Validate result against schema.response
+	if err := validateWithSchema(schemas.Response, res.Result, "response"); err != nil {
+		return diag.FromErr(err)
+	}
 
 	d.SetId(res.ID)
-	d.Set("result", res.Result)
+	d.Set("result", flattenMapValues(res.Result))
+	if err := setStoreAsJSONString(d, res.Store); err != nil {
+		return diag.FromErr(err)
+	}
 	return nil
 }
 
 func resourceRemoteUpdate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	client := m.(*remoteClient)
-	args := d.Get("args").(map[string]interface{})
-	state := dToMap(d)
-	res, err := invokeLambda(client, lambdaPayload{Action: "update", Args: args, State: state, Planning: isPlanning()})
+	argsStr := d.Get("args").(string)
+	args, err := parseArgsJSON(argsStr)
+	if err != nil {
+		return diag.FromErr(fmt.Errorf("update: %w", err))
+	}
+	store := map[string]interface{}{}
+	if v, ok := d.GetOk("store"); ok {
+		storeStr, ok := v.(string)
+		if ok && storeStr != "" {
+			_ = json.Unmarshal([]byte(storeStr), &store)
+		}
+	}
+	state := getPreviousArgs(d)
+
+	// Validate args against schema.request
+	schemas, err := client.getSchemas()
 	if err != nil {
 		return diag.FromErr(err)
 	}
-	d.Set("result", res.Result)
+	if err := validateWithSchema(schemas.Request, args, "request"); err != nil {
+		return diag.FromErr(err)
+	}
+
+	// Invoke Lambda, don't mutate state yet
+	res, err := invokeLambda(client, lambdaPayload{
+		Action:   "update",
+		Args:     args,
+		State:    state,
+		Store:    store,
+		Planning: isPlanning(),
+	})
+	if err != nil {
+		return diag.FromErr(err)
+	}
+	if res.ID == "" {
+		return diag.FromErr(fmt.Errorf("lambda update response missing required 'id' field or returned empty id"))
+	}
+	// Validate result against schema.response
+	if err := validateWithSchema(schemas.Response, res.Result, "response"); err != nil {
+		return diag.FromErr(err)
+	}
+
+	// *** Only now: mutate state ***
+	// Use SetId first if needed
+	d.SetId(res.ID)
+
+	// You may want to check error for d.Set as well, in case of a bug with map types
+	if err := d.Set("result", flattenMapValues(res.Result)); err != nil {
+		return diag.FromErr(fmt.Errorf("failed to set result: %w", err))
+	}
+	if err := setStoreAsJSONString(d, res.Store); err != nil {
+		return diag.FromErr(err)
+	}
 	return nil
 }
+
 
 func resourceRemoteDelete(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	client := m.(*remoteClient)
-	args := d.Get("args").(map[string]interface{})
-	state := dToMap(d)
-	_, err := invokeLambda(client, lambdaPayload{Action: "delete", Args: args, State: state, Planning: isPlanning()})
+	argsStr := d.Get("args").(string)
+	args, err := parseArgsJSON(argsStr)
+	if err != nil {
+		return diag.FromErr(fmt.Errorf("delete: %w", err))
+	}
+	store := map[string]interface{}{}
+	if v, ok := d.GetOk("store"); ok {
+		storeStr, ok := v.(string)
+		if ok && storeStr != "" {
+			_ = json.Unmarshal([]byte(storeStr), &store)
+		}
+	}
+	state := getPreviousArgs(d)
+
+	// Validate args against schema.request (do NOT validate result)
+	schemas, err := client.getSchemas()
 	if err != nil {
 		return diag.FromErr(err)
 	}
-	d.SetId("")
+	if err := validateWithSchema(schemas.Request, args, "request"); err != nil {
+		return diag.FromErr(err)
+	}
+
+	res, err := invokeLambda(client, lambdaPayload{Action: "delete", Args: args, State: state, Store: store, Planning: isPlanning()})
+	if err != nil {
+		return diag.FromErr(err)
+	}
+	if res.ID == "" {
+		d.SetId("")
+		return nil
+	}
+	// Do NOT validate response after delete
+	d.SetId(res.ID)
+	d.Set("result", flattenMapValues(res.Result))
+	if err := setStoreAsJSONString(d, res.Store); err != nil {
+		return diag.FromErr(err)
+	}
 	return nil
 }
 
-func dToMap(d *schema.ResourceData) map[string]interface{} {
-	out := make(map[string]interface{})
-	for k, v := range d.State().Attributes {
-		out[k] = v
+// Helper to flatten map[string]interface{} for result
+func flattenMapValues(input map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(input))
+	for k, v := range input {
+		switch v.(type) {
+		case map[string]interface{}, []interface{}:
+			encoded, err := json.Marshal(v)
+			if err == nil {
+				out[k] = string(encoded)
+			} else {
+				out[k] = fmt.Sprintf("%v", v)
+			 }
+		default:
+			out[k] = v
+		}
 	}
 	return out
 }

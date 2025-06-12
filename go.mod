@@ -5,6 +5,7 @@ go 1.20
 require (
 	github.com/aws/aws-sdk-go v1.49.7
 	github.com/hashicorp/terraform-plugin-sdk/v2 v2.31.0
+	github.com/xeipuuv/gojsonschema v1.2.0
 )
 
 require (
@@ -37,6 +38,8 @@ require (
 	github.com/vmihailenco/msgpack v4.0.4+incompatible // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
+	github.com/xeipuuv/gojsonpointer v0.0.0-20180127040702-4e3ac2762d5f // indirect
+	github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415 // indirect
 	github.com/zclconf/go-cty v1.14.1 // indirect
 	golang.org/x/net v0.18.0 // indirect
 	golang.org/x/sys v0.15.0 // indirect

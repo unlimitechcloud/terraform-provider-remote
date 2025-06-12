@@ -1,0 +1,1 @@
+go build -o terraform-provider-remote_v0.0.0
