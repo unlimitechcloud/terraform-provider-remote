@@ -248,7 +248,7 @@ func resourceRemote() *schema.Resource {
 			"result": {
 				Type:     schema.TypeMap,
 				Computed: true,
-				Elem:     &schema.Schema{Type: schema.TypeString},
+				// Elem:     &schema.Schema{Type: schema.TypeString},
 			},
 			"store": {
 				Type:     schema.TypeString,
@@ -284,37 +284,67 @@ func invokeLambda(client *remoteClient, payload lambdaPayload) (*lambdaResponse,
 		return nil, err
 	}
 
-	// Action-specific parsing
-	switch payload.Action {
-	case "diff", "schema":
-		// Old style: whole response as result (for schema/diff)
-		return &lambdaResponse{
-			Result: out,
-		}, nil
-	default:
-		// CRUD: expects { result: {...}, store: {...}, replace?, reason? }
-		resultVal, _ := out["result"].(map[string]interface{})
-		storeVal, _ := out["store"].(map[string]interface{})
-		replace, _ := out["replace"].(bool)
-		reason, _ := out["reason"].(string)
+	// --- BEGIN: More robust result parsing & debug ---
+	var resultVal map[string]interface{}
 
-		id := ""
-		if resultVal != nil {
-			if idRaw, ok := resultVal["id"]; ok {
-				id, _ = idRaw.(string)
+	// Print type and value of out["result"] for debugging
+	if res, ok := out["result"]; ok {
+		log.Printf("[DEBUG] Raw Go type for out[\"result\"]: %T", res)
+		b, _ := json.MarshalIndent(res, "", "  ")
+		log.Printf("[DEBUG] Raw value for out[\"result\"]: %s", string(b))
+
+		switch v := res.(type) {
+		case map[string]interface{}:
+			resultVal = v
+		case string:
+			// If it is a string, try to unmarshal it
+			if err := json.Unmarshal([]byte(v), &resultVal); err != nil {
+				log.Printf("[ERROR] Could not unmarshal result string: %v", err)
+				resultVal = map[string]interface{}{}
 			}
+		default:
+			log.Printf("[ERROR] Unexpected result type: %T", v)
+			resultVal = map[string]interface{}{}
 		}
-
-		return &lambdaResponse{
-			ID:      id,
-			Result:  resultVal,
-			Store:   storeVal,
-			Replace: replace,
-			Reason:  reason,
-		}, nil
+	} else {
+		resultVal = map[string]interface{}{}
 	}
-}
 
+	// Print the final parsed resultVal as pretty JSON for debugging
+	b, _ := json.MarshalIndent(resultVal, "", "  ")
+	log.Printf("[DEBUG] Parsed resultVal to be set: %s", string(b))
+	// --- END: More robust result parsing & debug ---
+
+	var storeVal map[string]interface{}
+	if store, ok := out["store"]; ok {
+		switch v := store.(type) {
+		case map[string]interface{}:
+			storeVal = v
+		case string:
+			_ = json.Unmarshal([]byte(v), &storeVal)
+		default:
+			storeVal = map[string]interface{}{}
+		}
+	}
+
+	replace, _ := out["replace"].(bool)
+	reason, _ := out["reason"].(string)
+
+	id := ""
+	if resultVal != nil {
+		if idRaw, ok := resultVal["id"]; ok {
+			id, _ = idRaw.(string)
+		}
+	}
+
+	return &lambdaResponse{
+		ID:      id,
+		Result:  resultVal,
+		Store:   storeVal,
+		Replace: replace,
+		Reason:  reason,
+	}, nil
+}
 
 func setStoreAsJSONString(d *schema.ResourceData, store map[string]interface{}) error {
 	if store == nil {
@@ -364,7 +394,7 @@ func resourceRemoteCreate(ctx context.Context, d *schema.ResourceData, m interfa
 		return diag.FromErr(err)
 	}
 	d.SetId(res.ID)
-	d.Set("result", flattenMapValues(res.Result))
+	d.Set("result", mapStringValues(res.Result))
 	if err := setStoreAsJSONString(d, res.Store); err != nil {
 		return diag.FromErr(err)
 	}
@@ -413,7 +443,7 @@ func resourceRemoteRead(ctx context.Context, d *schema.ResourceData, m interface
 	}
 
 	d.SetId(res.ID)
-	d.Set("result", flattenMapValues(res.Result))
+	d.Set("result", mapStringValues(res.Result))
 	if err := setStoreAsJSONString(d, res.Store); err != nil {
 		return diag.FromErr(err)
 	}
@@ -469,7 +499,7 @@ func resourceRemoteUpdate(ctx context.Context, d *schema.ResourceData, m interfa
 	d.SetId(res.ID)
 
 	// You may want to check error for d.Set as well, in case of a bug with map types
-	if err := d.Set("result", flattenMapValues(res.Result)); err != nil {
+	if err := d.Set("result", mapStringValues(res.Result)); err != nil {
 		return diag.FromErr(fmt.Errorf("failed to set result: %w", err))
 	}
 	if err := setStoreAsJSONString(d, res.Store); err != nil {
@@ -514,7 +544,7 @@ func resourceRemoteDelete(ctx context.Context, d *schema.ResourceData, m interfa
 	}
 	// Do NOT validate response after delete
 	d.SetId(res.ID)
-	d.Set("result", flattenMapValues(res.Result))
+	d.Set("result", mapStringValues(res.Result))
 	if err := setStoreAsJSONString(d, res.Store); err != nil {
 		return diag.FromErr(err)
 	}
@@ -542,4 +572,18 @@ func flattenMapValues(input map[string]interface{}) map[string]interface{} {
 
 func isPlanning() bool {
 	return os.Getenv("TF_LOG") == "TRACE" && os.Getenv("TF_IN_AUTOMATION") == "1"
+}
+
+func mapStringValues(input map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(input))
+	for k, v := range input {
+		switch val := v.(type) {
+		case string:
+			out[k] = val
+		default:
+			// Numbers, bools, etc, convert to string
+			out[k] = fmt.Sprintf("%v", val)
+		}
+	}
+	return out
 }

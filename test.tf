@@ -75,3 +75,7 @@ resource "remote_resource" "ec2_instance" {
     }
   })
 }
+
+output "my_object_json" {
+  value = jsonencode(remote_resource.ec2_instance.result)
+}
