@@ -157,7 +157,7 @@ func validateWithSchema(schema map[string]interface{}, doc interface{}, side str
 func parseArgsJSON(argsStr string) (map[string]interface{}, error) {
 	var out map[string]interface{}
 	if err := json.Unmarshal([]byte(argsStr), &out); err != nil {
-		return nil, fmt.Errorf("failed to parse args as JSON object: %w", err)
+		return nil, fmt.Errorf("failed to parse args as JSON object: %w\nInput was:\n%s", err, argsStr)
 	}
 	return out, nil
 }

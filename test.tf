@@ -4,6 +4,9 @@ terraform {
       source  = "unlimitechcloud/remote"
       version = "0.0.0"
     }
+    cloudinit = {
+      source = "hashicorp/cloudinit"
+    }
   }
 }
 
@@ -11,6 +14,21 @@ provider "remote" {
   alias  = "ec2"
   lambda = "CoderEc2WorkspaceHandler"
   region = "us-east-1"
+}
+
+data "cloudinit_config" "user_data" {
+  gzip          = false
+  base64_encode = true
+
+  part {
+    filename     = "cloud-config.yaml"
+    content_type = "text/cloud-config"
+    content      = templatefile("${path.module}/test/cloud-config.yaml.tftpl", {
+      hostname   = ""
+      linux_user = ""
+      token       = ""
+    })
+  }
 }
 
 resource "remote_resource" "ec2_instance" {
@@ -22,6 +40,7 @@ resource "remote_resource" "ec2_instance" {
     subnet_id          = "subnet-083224448dace4c25"
     security_group_ids = ["sg-08695b63da890ed3a"]
     key_pair_name      = "coder"
+    user_data          = try(coalesce(data.cloudinit_config.user_data.rendered, ""), "")
 
     block_devices = {
       root = {
