@@ -245,6 +245,10 @@ func resourceRemote() *schema.Resource {
 				Type:     schema.TypeString,
 				Required: true,
 			},
+			"args1": {
+				Type:     schema.TypeString,
+				Required: true,
+			},
 			"result": {
 				Type:     schema.TypeMap,
 				Computed: true,
