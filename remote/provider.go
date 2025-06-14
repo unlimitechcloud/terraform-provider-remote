@@ -154,13 +154,36 @@ func validateWithSchema(schema map[string]interface{}, doc interface{}, side str
 }
 
 // --- Helper: parse JSON string (args) into map ---
-func parseArgsJSON(argsStr string) (map[string]interface{}, error) {
-	var out map[string]interface{}
-	if err := json.Unmarshal([]byte(argsStr), &out); err != nil {
-		return nil, fmt.Errorf("failed to parse args as JSON object: %w\nInput was:\n%s", err, argsStr)
+func parseArgsJSON(argsInput interface{}) (map[string]interface{}, error) {
+	switch arr := argsInput.(type) {
+	case []interface{}: // expecting an array of strings
+		final := map[string]interface{}{}
+		for i, el := range arr {
+			s, ok := el.(string)
+			if !ok {
+				log.Printf("[WARN] Args index %d is not a string: %v", i, el)
+				continue
+			}
+			var m map[string]interface{}
+			if err := json.Unmarshal([]byte(s), &m); err != nil {
+				log.Printf("[WARN] Failed to parse args[%d]: %v\nInput: %s", i, err, s)
+				continue
+			}
+			deepMerge(final, m)
+		}
+		return final, nil
+	case string:
+		// Fallback for old usage: single string
+		var m map[string]interface{}
+		if err := json.Unmarshal([]byte(arr), &m); err != nil {
+			return nil, fmt.Errorf("failed to parse args as JSON object: %w\nInput was:\n%s", err, arr)
+		}
+		return m, nil
+	default:
+		return nil, fmt.Errorf("args must be either string or array of strings")
 	}
-	return out, nil
 }
+
 
 // --- Helper for getPreviousArgs: returns args from state as map[string]interface{} ---
 func getPreviousArgs(d *schema.ResourceData) map[string]interface{} {
@@ -242,11 +265,8 @@ func resourceRemote() *schema.Resource {
 				Computed: true,
 			},
 			"args": {
-				Type:     schema.TypeString,
-				Required: true,
-			},
-			"args1": {
-				Type:     schema.TypeString,
+				Type:     schema.TypeList,
+				Elem:     &schema.Schema{Type: schema.TypeString},
 				Required: true,
 			},
 			"result": {
@@ -590,4 +610,17 @@ func mapStringValues(input map[string]interface{}) map[string]interface{} {
 		}
 	}
 	return out
+}
+
+// Merges src into dst (modifies dst)
+func deepMerge(dst, src map[string]interface{}) {
+	for k, v := range src {
+		if vmap, ok := v.(map[string]interface{}); ok {
+			if dmap, ok := dst[k].(map[string]interface{}); ok {
+				deepMerge(dmap, vmap)
+				continue
+			}
+		}
+		dst[k] = v
+	}
 }
