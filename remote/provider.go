@@ -213,7 +213,7 @@ func resourceRemote() *schema.Resource {
 		DeleteContext: resourceRemoteDelete,
 		CustomizeDiff: func(ctx context.Context, d *schema.ResourceDiff, meta interface{}) error {
 			client := meta.(*remoteClient)
-			argsStr := d.Get("args").(string)
+			argsStr := d.Get("args")
 			args, err := parseArgsJSON(argsStr)
 			if err != nil {
 				return fmt.Errorf("CustomizeDiff: %w", err)
@@ -383,7 +383,7 @@ func setStoreAsJSONString(d *schema.ResourceData, store map[string]interface{}) 
 
 func resourceRemoteCreate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	client := m.(*remoteClient)
-	argsStr := d.Get("args").(string)
+	argsStr := d.Get("args")
 	args, err := parseArgsJSON(argsStr)
 	if err != nil {
 		return diag.FromErr(fmt.Errorf("create: %w", err))
@@ -427,7 +427,7 @@ func resourceRemoteCreate(ctx context.Context, d *schema.ResourceData, m interfa
 
 func resourceRemoteRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	client := m.(*remoteClient)
-	argsStr := d.Get("args").(string)
+	argsStr := d.Get("args")
 	args, err := parseArgsJSON(argsStr)
 	if err != nil {
 		return diag.FromErr(fmt.Errorf("read: %w", err))
@@ -476,7 +476,7 @@ func resourceRemoteRead(ctx context.Context, d *schema.ResourceData, m interface
 
 func resourceRemoteUpdate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	client := m.(*remoteClient)
-	argsStr := d.Get("args").(string)
+	argsStr := d.Get("args")
 	args, err := parseArgsJSON(argsStr)
 	if err != nil {
 		return diag.FromErr(fmt.Errorf("update: %w", err))
@@ -535,7 +535,7 @@ func resourceRemoteUpdate(ctx context.Context, d *schema.ResourceData, m interfa
 
 func resourceRemoteDelete(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	client := m.(*remoteClient)
-	argsStr := d.Get("args").(string)
+	argsStr := d.Get("args")
 	args, err := parseArgsJSON(argsStr)
 	if err != nil {
 		return diag.FromErr(fmt.Errorf("delete: %w", err))

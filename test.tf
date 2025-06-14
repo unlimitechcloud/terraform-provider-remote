@@ -27,7 +27,7 @@ resource "remote_resource" "ec2_instance" {
       security_group_ids = ["sg-08695b63da890ed3a"]
       key_pair_name      = "coder"
     }),
-    "user data problem",
+    "user data problem sasa",
     jsonencode({
       block_devices = {
         root = {
@@ -49,10 +49,10 @@ resource "remote_resource" "ec2_instance" {
         workspace = {
           access_port       = 8080
           access_url        = "https://dev.coder.example.com/myws1"
-          id                = "myws1"
+          id                = "myws2"
           is_prebuild       = false
           is_prebuild_claim = false
-          name              = "myws1"
+          name              = "myws2"
           owner = {
             email             = "alice@example.com"
             full_name         = "Alice Example"
